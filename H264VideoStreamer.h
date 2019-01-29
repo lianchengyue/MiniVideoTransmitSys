@@ -1,0 +1,6 @@
+#ifndef H264VIDEOSTREAMER_H
+#define H264VIDEOSTREAMER_H
+
+int startH264VideoStream();
+
+#endif // H264VIDEOSTREAMER_H
