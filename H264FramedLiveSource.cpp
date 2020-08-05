@@ -18,15 +18,48 @@
 #include <assert.h>
 #include "H264FramedLiveSource.hh"
 #include <BasicUsageEnvironment.hh>
-
-#define WIDTH 			640
-#define HEIGHT 			480
-///#define widthStep 		960
-#define FILE_VIDEO      "/dev/video0"
+#include "Utils.h"
 
 extern class UVCCamera Camera;
 
-class H264Encoder h264encoder;
+char v4l2_ioctl_supported_framesize(int fd)
+{
+    //调试中，错误的代码
+    int idx = 0;
+    char retChar = 'e'; //error
+    if (-1 != fd)
+    {
+        enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        struct v4l2_fmtdesc fmtdesc;
+        struct v4l2_frmivalenum frmival;
+        struct v4l2_frmsizeenum frmsize;
+        fmtdesc.index = 0;
+        fmtdesc.type = type;
+
+        while (ioctl(fd, VIDIOC_ENUM_FMT, &fmtdesc) == 0)
+        {
+            frmsize.pixel_format = fmtdesc.pixelformat;
+            frmsize.index = 0;
+            while (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &frmsize) == 0)
+            {
+                if(frmsize.type == V4L2_FRMSIZE_TYPE_DISCRETE)
+                {
+                    printf("supported size = %dx%d\n", frmsize.discrete.width, frmsize.discrete.height);
+                    retChar = 'n'; }
+                /*else if(frmsize.type == V4L2_FRMSIZE_TYPE_STEPWISE)
+                {
+                    printf("allan2:%dx%d\n",frmsize.discrete.width, frmsize.discrete.height);
+                }*/
+                frmsize.index++;
+            }
+            fmtdesc.index++;
+            printf("\n\n");
+        }
+    }
+    return retChar;
+}
+
+
 
 void UVCCamera::init_mmap(void)
 {
@@ -37,11 +70,11 @@ void UVCCamera::init_mmap(void)
 	reqbufs.memory = V4L2_MEMORY_MMAP;				
 
 	if(-1 == ioctl(fd,VIDIOC_REQBUFS,&reqbufs))
-	{
+    {
 		perror("Fail to ioctl 'VIDIOC_REQBUFS'");
 		exit(EXIT_FAILURE);
 	}
-	
+
 	n_buffer = reqbufs.count;
 	printf("n_buffer = %d\n", n_buffer);
 	usr_buf = (BUFTYPE*)calloc(reqbufs.count, sizeof(BUFTYPE));
@@ -50,6 +83,9 @@ void UVCCamera::init_mmap(void)
 		printf("Out of memory\n");
 		exit(-1);
 	}
+
+    //查询分辨率
+    v4l2_ioctl_supported_framesize(fd);
 
 	for(n_buffer = 0; n_buffer < reqbufs.count; ++n_buffer)
 	{
@@ -125,7 +161,7 @@ void UVCCamera::init_camera(void)
         printf("\t%d.%s\n",fmtdesc.index+1,fmtdesc.description);
         fmtdesc.index++;
     }
-	
+
 	if(!(cap.capabilities & V4L2_BUF_TYPE_VIDEO_CAPTURE))
 	{
 		fprintf(stderr, "The Current device is not a video capture device \n");
@@ -143,7 +179,7 @@ void UVCCamera::init_camera(void)
 	tv_fmt.fmt.pix.height = HEIGHT;
 #ifdef YUYV
     tv_fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-#else
+#elif defined NV21
     tv_fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_NV21;
 #endif
     tv_fmt.fmt.pix.field = V4L2_FIELD_INTERLACED;

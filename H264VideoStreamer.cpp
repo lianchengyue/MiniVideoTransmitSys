@@ -27,7 +27,13 @@ along with this library; if not, write to the Free Software Foundation, Inc.,
 #include <liveMedia.hh>
 #include <BasicUsageEnvironment.hh>
 #include <GroupsockHelper.hh>
+
+#ifdef FROM_CAMERA
 #include <H264FramedLiveSource.hh>
+#elif defined FROM_FILE_NV21
+#include <H264FramedFileSource.hh>
+#endif
+
 #include <sys/types.h>
 #include <sys/stat.h>
 
@@ -38,12 +44,18 @@ char const* inputFileName = "/tmp/fifo";
 char *ptr;
 H264VideoStreamFramer* videoSource;
 RTPSink* videoSink;
+#ifdef FROM_CAMERA
 class UVCCamera Camera;
+#elif defined FROM_FILE_NV21
+class YUVFile NV21File;
+#endif
 
 void play(); // forward
 
 EventTriggerId DeviceSource::eventTriggerId = 0;
 
+//从 /dev/videoX 加载
+#ifdef FROM_CAMERA
 int startH264VideoStream()
 {
     // Begin by setting up our usage environment:
@@ -76,7 +88,7 @@ int startH264VideoStream()
     }
     while(1)
     {
-        usleep(15000);
+        //usleep(15000);
         if(0 == Camera.getnextframe())
         {
             fwrite(Camera.h264_buf, Camera.h264_frame_len, 1, Camera.pipe_fd);
@@ -115,7 +127,7 @@ int startH264VideoStream()
     exit(1);
     }
     ServerMediaSession* sms
-    = ServerMediaSession::createNew(*env, "testStream", inputFileName,
+    = ServerMediaSession::createNew(*env, "testStream1", inputFileName,
            "Session streamed by \"testH264VideoStreamer\"",
                        True /*SSM*/);
     sms->addSubsession(PassiveServerMediaSubsession::createNew(*videoSink, rtcp));
@@ -133,13 +145,119 @@ int startH264VideoStream()
 
     return 0; // only to prevent compiler warning
 }
+#endif
+
+//从文件加载
+#ifdef FROM_FILE_NV21
+int startH264StreamFromFile()
+{
+    // Begin by setting up our usage environment:
+    TaskScheduler* scheduler = BasicTaskScheduler::createNew();
+    env = BasicUsageEnvironment::createNew(*scheduler);
+
+    // Create 'groupsocks' for RTP and RTCP:
+    struct in_addr destinationAddress;
+    destinationAddress.s_addr = chooseRandomIPv4SSMAddress(*env);
+    // Note: This is a multicast address.  If you wish instead to stream
+    // using unicast, then you should use the "testOnDemandRTSPServer"
+    // test program - not this test program - as a model.
+
+    const unsigned short rtpPortNum = 18888;
+    const unsigned short rtcpPortNum = rtpPortNum+1;
+    const unsigned char ttl = 255;
+
+    const Port rtpPort(rtpPortNum);
+    const Port rtcpPort(rtcpPortNum);
+
+    NV21File.Init();
+    mkfifo(inputFileName, 0777);
+
+    if(0 == fork())
+    {
+        NV21File.pipe_fd = fopen(inputFileName, "w");
+
+        if(NULL == NV21File.pipe_fd)
+        {
+            printf("===============child process open pipe err =======\n ");
+        }
+
+        //usleep(2000000);
+
+        while(1)
+        {
+            //usleep(15000);
+            if(0 == NV21File.getnextframe())
+            {
+                fwrite(NV21File.h264_buf, NV21File.h264_frame_len, 1, NV21File.pipe_fd);
+            }
+        }
+
+    }
+    else
+    {
+
+    }
+
+    Groupsock rtpGroupsock(*env, destinationAddress, rtpPort, ttl);
+    rtpGroupsock.multicastSendOnly(); // we're a SSM source
+    Groupsock rtcpGroupsock(*env, destinationAddress, rtcpPort, ttl);
+    rtcpGroupsock.multicastSendOnly(); // we're a SSM source
+
+
+
+    // Create a 'H264 Video RTP' sink from the RTP 'groupsock':
+    OutPacketBuffer::maxSize = 600000;
+    videoSink = H264VideoRTPSink::createNew(*env, &rtpGroupsock, 96);
+
+    // Create (and start) a 'RTCP instance' for this RTP sink:
+    const unsigned estimatedSessionBandwidth = 10000; // in kbps; for RTCP b/w share
+    const unsigned maxCNAMElen = 100;
+    unsigned char CNAME[maxCNAMElen+1];
+    gethostname((char*)CNAME, maxCNAMElen);
+    CNAME[maxCNAMElen] = '\0'; // just in case
+    RTCPInstance* rtcp
+    = RTCPInstance::createNew(*env, &rtcpGroupsock,
+                estimatedSessionBandwidth, CNAME,
+                videoSink, NULL /* we're a server */,
+                True /* we're a SSM source */);
+    // Note: This starts RTCP running automatically
+
+    RTSPServer* rtspServer = RTSPServer::createNew(*env, 8554);
+    if (rtspServer == NULL) {
+    *env << "Failed to create RTSP server: " << env->getResultMsg() << "\n";
+    exit(1);
+    }
+    ServerMediaSession* sms
+    = ServerMediaSession::createNew(*env, "testStream1", inputFileName,
+           "Session streamed by \"testH264VideoStreamer\"",
+                       True /*SSM*/);
+    sms->addSubsession(PassiveServerMediaSubsession::createNew(*videoSink, rtcp));
+    rtspServer->addServerMediaSession(sms);
+
+    char* url = rtspServer->rtspURL(sms);
+    *env << "Play this stream using the URL \"" << url << "\"\n";
+    delete[] url;
+
+    // Start the streaming:
+    *env << "Beginning streaming...\n";
+    play();
+
+    env->taskScheduler().doEventLoop(); // does not return
+
+    return 0; // only to prevent compiler warning
+}
+#endif
 
 void afterPlaying(void* /*clientData*/)
 {
     *env << "...done reading from file\n";
     videoSink->stopPlaying();
     Medium::close(videoSource);
+#ifdef FROM_CAMERA
     Camera.Destory();
+#elif defined FROM_FILE_NV21
+    NV21File.Destory();
+#endif
     // Note that this also closes the input file that this source read from.
 
     // Start playing once again:
